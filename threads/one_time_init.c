@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -15,30 +15,51 @@
    The one_time_init() function implemented here performs the same task as
    the POSIX threads pthread_once() library function.
 */
+
+/*
+ * VERBOSE COMMENTARY:
+ * Sometimes you have a function that must run exactly once, no matter how many 
+ * threads call it (e.g., initializing a database connection pool).
+ * * This code manually implements the logic behind pthread_once().
+ * It uses a mutex and a boolean flag ('called').
+ */
+
 #include <pthread.h>
 #include "tlpi_hdr.h"
 
 struct once_struct {            /* Our equivalent of pthread_once_t */
-    pthread_mutex_t mtx;
-    int called;
+    pthread_mutex_t mtx;        /* Lock to protect the 'called' flag */
+    int called;                 /* Flag: 0 = not called, 1 = called */
 };
 
 #define ONCE_INITIALIZER { PTHREAD_MUTEX_INITIALIZER, 0 }
 
 struct once_struct once = ONCE_INITIALIZER;
 
+/*
+ * one_time_init
+ * -------------
+ * Ensures that 'init' is called only once.
+ * once_control: State structure shared by all threads.
+ * init: The function to execute once.
+ */
 static int
 one_time_init(struct once_struct *once_control, void (*init)(void))
 {
     int s;
 
+    /* * Acquire the lock. 
+     * This serializes the check. If multiple threads reach here, one enters,
+     * checks the flag, runs the function, sets the flag, and leaves.
+     * The others enter, see the flag is set, and skip the function.
+     */
     s = pthread_mutex_lock(&(once_control->mtx));
     if (s == -1)
         errExitEN(s, "pthread_mutex_lock");
 
     if (!once_control->called) {
-        (*init)();
-        once_control->called = 1;
+        (*init)();              /* Run the initialization function */
+        once_control->called = 1; /* Mark as done */
     }
 
     s = pthread_mutex_unlock(&(once_control->mtx));
@@ -98,3 +119,5 @@ main(int argc, char *argv[])
 
     exit(EXIT_SUCCESS);
 }
+
+

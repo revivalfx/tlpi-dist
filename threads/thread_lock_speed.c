@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -32,22 +32,38 @@
    values), mutexes will perform better, while in others (few threads,
    small "inner loop" value), spin locks are likely to be better.
 */
+
+/*
+ * VERBOSE COMMENTARY:
+ * * Performance Theory:
+ * 1. Small Inner Loop (short critical section): 
+ * The overhead of putting a thread to sleep (mutex) is high compared to the 
+ * work being done. A Spinlock is usually FASTER here because it avoids the OS scheduler.
+ * * 2. Large Inner Loop (long critical section):
+ * A thread waiting on a Spinlock will burn 100% CPU while waiting. 
+ * A thread waiting on a Mutex consumes ~0% CPU.
+ * If the critical section is long, the Spinlock wastes massive resources.
+ */
+
 #include <pthread.h>
 #include "tlpi_hdr.h"
 
 static volatile int glob = 0;
 static pthread_spinlock_t splock;
 static pthread_mutex_t mtx;
-static int useMutex = 0;
-static int numOuterLoops;
-static int numInnerLoops;
+static int useMutex = 0;        /* Flag: 1=Use Mutex, 0=Use Spinlock */
+static int numOuterLoops;       /* How many times to grab the lock */
+static int numInnerLoops;       /* How long to hold the lock (workload) */
 
 static void *
 threadFunc(void *arg)
 {
     int s;
 
+    /* Loop A: Frequency of locking */
     for (int j = 0; j < numOuterLoops; j++) {
+        
+        /* Acquire the chosen lock type */
         if (useMutex) {
             s = pthread_mutex_lock(&mtx);
             if (s != 0)
@@ -58,9 +74,13 @@ threadFunc(void *arg)
                 errExitEN(s, "pthread_spin_lock");
         }
 
+        /* * Loop B: Duration of critical section.
+         * We increment 'glob' repeatedly to simulate "work" while holding the lock.
+         */
         for (int k = 0; k < numInnerLoops; k++)
             glob++;
 
+        /* Release the chosen lock type */
         if (useMutex) {
             s = pthread_mutex_unlock(&mtx);
             if (s != 0)
@@ -96,19 +116,23 @@ main(int argc, char *argv[])
     pthread_t *thread;
     int verbose;
 
-    /* Prevent runaway/forgotten process from burning up CPU time forever */
-
+    /* * Safety Alarm:
+     * If using spinlocks with high contention, the system might appear to freeze
+     * or take too long. This kills the program after 120 seconds.
+     */
     alarm(120);         /* Unhandled SIGALRM will kill process */
 
-    useMutex = 1;
+    useMutex = 1;       /* Default to Mutex */
     verbose = 1;
+    
+    /* Parse command line arguments using getopt */
     while ((opt = getopt(argc, argv, "qs")) != -1) {
         switch (opt) {
         case 'q':
-            verbose = 0;
+            verbose = 0; /* Quiet mode */
             break;
         case 's':
-            useMutex = 0;
+            useMutex = 0; /* Switch to Spinlocks */
             break;
         default:
             usageError(argv[0]);
@@ -132,6 +156,7 @@ main(int argc, char *argv[])
     if (thread == NULL)
         errExit("calloc");
 
+    /* Initialize the appropriate synchronization primitive */
     if (useMutex) {
         s = pthread_mutex_init(&mtx, NULL);
         if (s != 0)
@@ -142,12 +167,14 @@ main(int argc, char *argv[])
             errExitEN(s, "pthread_spin_init");
     }
 
+    /* Create all threads */
     for (int j = 0; j < numThreads; j++) {
         s = pthread_create(&thread[j], NULL, threadFunc, NULL);
         if (s != 0)
             errExitEN(s, "pthread_create");
     }
 
+    /* Wait for all threads to finish */
     for (int j = 0; j < numThreads; j++) {
         s = pthread_join(thread[j], NULL);
         if (s != 0)

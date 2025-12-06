@@ -20,6 +20,18 @@
 
         # ausearch -ui $USER --format text --start recent -c seccomp_logging
 */
+
+/* seccomp_logging.c
+
+   Detailed Explanation:
+   This program installs a filter that returns SECCOMP_RET_LOG for specific calls
+   (in this stub, it returns LOG for *everything* that isn't killed).
+   
+   SECCOMP_RET_LOG executes the system call, but logs the attempt to the 
+   system audit log. This is useful for "Dry Run" modes where you want to 
+   see what a program is doing without breaking it.
+*/
+
 #define _GNU_SOURCE
 #include <stddef.h>
 #include <linux/audit.h>
@@ -57,27 +69,24 @@ static void
 install_filter(void)
 {
     struct sock_filter filter[] = {
-        /* Load architecture */
-
+        /* [0] Load Arch */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                 (offsetof(struct seccomp_data, arch))),
 
-        /* Kill the process if the architecture is not what we expect */
-
+        /* [1] Check x86-64 */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 0, 2),
 
-        /* Load system call number */
-
+        /* [2] Load Syscall Number */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  (offsetof(struct seccomp_data, nr))),
 
-        /* Kill the process if this is an x32 system call (bit 30 is set) */
-
+        /* [3] Check x32 bit. Kill if set. */
         BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
 
-        /* Some filter rules will later be inserted here */
-
+        /* [5] Action: Log and Allow.
+           Any syscall reaching here is executed, but an audit record is generated.
+        */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_LOG),
     };
 

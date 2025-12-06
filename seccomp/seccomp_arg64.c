@@ -94,19 +94,40 @@ install_filter(void)
            how endianess differences can be abstracted away when dealing
            with 64-bit arguments. */
 
+	/* --- 64-bit Argument Check Logic ---
+           Argument 1 is 'offset' (type off_t, 64-bit).
+           Structure of args array in seccomp_data is __u64.
+           Assuming Little Endian (Intel):
+           - Low 32 bits are at offsetof(args[1])
+           - High 32 bits are at offsetof(args[1]) + 4
+        */
+
+        /* [1] Check HIGH 32 bits.
+           Load the High word. */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  (offsetof(struct seccomp_data, args[1]) + sizeof(__u32))),
+        
+        /* If High word is NOT zero, the number is definitely > 1000 (huge).
+           Jump 1 instruction (Fail) if Not Zero. */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+        
+        /* Fail with errno=2 if high bits set. */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | 2),
 
-        /* Load bottom 4 bytes of 'offset' argument; fail with errno==1
-           if the value is > 1000; otherwise allow the system call */
-
+        /* [2] Check LOW 32 bits.
+           Load the Low word. */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  (offsetof(struct seccomp_data, args[1]))),
+        
+        /* If Low word > 1000? 
+           If TRUE: Jump 0 (Fail). 
+           If FALSE: Jump 1 (Allow). */
         BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, 1000, 0, 1),
+        
+        /* Fail with errno=1 if low bits > 1000. */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | 1),
 
+        /* Allow (Low bits <= 1000 AND High bits == 0) */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
 

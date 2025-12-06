@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -18,9 +18,9 @@
    This program can be used to do a simple demonstration of file capabilities.
    If the executable is assigned the CAP_DAC_READ_SEARCH capability:
 
-        setcap cap_dac_read_search=pe
+        setcap cap_dac_read_search=pe demo_file_caps
 
-   then it can open any file for reading.
+   then it can open any file for reading, bypassing standard permission checks.
 */
 #define _GNU_SOURCE
 #include <sys/capability.h>
@@ -44,22 +44,31 @@ main(int argc, char *argv[])
 
     /* Fetch and display process capabilities */
 
+    /* * Get the capabilities of the currently running process.
+     * If file capabilities were set on this executable, they will appear
+     * in the Permitted and Effective sets here.
+     */
     caps = cap_get_proc();
     if (caps == NULL)
         errExit("cap_get_proc");
 
+    /* Convert capability set to string for display */
     str = cap_to_text(caps, NULL);
     if (str == NULL)
         errExit("cap_to_text");
 
     printf("Capabilities: %s\n", str);
 
+    /* Free memory allocated by libcap */
     cap_free(caps);
     cap_free(str);
 
     /* If an argument was supplied, try to open that file */
-
     if (argc > 1) {
+        /* * Attempt to open the file read-only.
+         * If the process has CAP_DAC_READ_SEARCH (or CAP_DAC_OVERRIDE),
+         * this will succeed even if the file is owned by root and mode 600.
+         */
         fd = open(argv[1], O_RDONLY);
         if (fd >= 0)
             printf("Successfully opened %s\n", argv[1]);
@@ -69,3 +78,5 @@ main(int argc, char *argv[])
 
     exit(EXIT_SUCCESS);
 }
+
+

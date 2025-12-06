@@ -46,30 +46,54 @@
    function result; the caller is responsible for freeing this buffer. If
    'instrCnt' is not NULL, then the number of instructions in the filter is
    placed in *instrCnt. */
-
+/* fetchFilter:
+   Helper function to interact with the target process via ptrace.
+   
+   Arguments:
+   - pid: The Process ID to inspect.
+   - filterIndex: Which filter in the stack to retrieve (0 = newest).
+   - instrCnt: Output pointer to store the number of BPF instructions found.
+   
+   Returns:
+   - A dynamically allocated pointer to the BPF program (array of sock_filter).
+*/
 static struct sock_filter *
 fetchFilter(pid_t pid, int filterIndex, int *instrCnt)
 {
     struct sock_filter *filterProg;
     int icnt;
 
-    /* Attach to the target process and wait for it to be stopped by
-       the attach operation */
-
+    /* 1. Attach to the target process.
+       PTRACE_ATTACH sends a SIGSTOP to the target, causing it to pause 
+       execution so we can inspect it safely. 
+    */
     if (ptrace(PTRACE_ATTACH, pid, 0, 0) == -1)
         errExit("ptrace - PTRACE_ATTACH");
 
+    /* 2. Wait for the stop.
+       We must wait for the target process to actually change state (stop)
+       before we can issue ptrace queries.
+    */
     if (waitpid(pid, NULL, 0) == -1)
         errExit("waitpid");
 
-    /* Discover the number of instructions in the BPF filter */
-
+    /* 3. Discover the size of the filter.
+       
+       We invoke PTRACE_SECCOMP_GET_FILTER with the 'data' argument set to NULL.
+       In this mode, the kernel returns the number of instructions (struct sock_filter)
+       in the filter at 'filterIndex'.
+    */
     icnt = ptrace(PTRACE_SECCOMP_GET_FILTER, pid, filterIndex, NULL);
     if (icnt == -1) {
         if (errno == ENOENT) {
+            /* ENOENT means the index requested is higher than the number of 
+               filters attached to the process. */
             fprintf(stderr, "No BPF program exists at index %d\n", filterIndex);
             exit(EXIT_FAILURE);
-        } else if (errno == EACCES) {   /* As documented in ptrace(2)... */
+        } else if (errno == EACCES) {   
+            /* EACCES usually means permissions issues. Inspecting seccomp filters
+               requires CAP_SYS_ADMIN capabilities (root) unless you are the 
+               direct parent. */
             fprintf(stderr, "You lack the CAP_SYS_ADMIN capability; "
                     "run this program as root\n");
             exit(EXIT_FAILURE);
@@ -78,12 +102,17 @@ fetchFilter(pid_t pid, int filterIndex, int *instrCnt)
         }
     }
 
-    /* Allocate a buffer and fetch the content of the BPF filter */
-
+    /* 4. Allocate memory.
+       We need a buffer large enough to hold 'icnt' number of sock_filter structures.
+    */
     filterProg = calloc(icnt, sizeof(struct sock_filter));
     if (filterProg == NULL)
         errExit("calloc");
 
+    /* 5. Fetch the actual filter data.
+       We invoke PTRACE_SECCOMP_GET_FILTER again, this time passing our 
+       allocated buffer. The kernel copies the BPF instructions into user space.
+    */
     icnt = ptrace(PTRACE_SECCOMP_GET_FILTER, pid, filterIndex, filterProg);
     if (icnt == -1)
         errExit("ptrace - PTRACE_SECCOMP_GET_FILTER-2");
@@ -91,20 +120,28 @@ fetchFilter(pid_t pid, int filterIndex, int *instrCnt)
     if (instrCnt != NULL)
         *instrCnt = icnt;
 
+    /* Note: We intentionally do not detach (PTRACE_DETACH) here because 
+       the program exits immediately after this function returns, and the 
+       OS cleans up ptrace attachments on exit. */
+
     return filterProg;
 }
 
-/* Dump filter contents to a file */
-
+/* dumpFilter:
+   Helper function to write the binary BPF data to a file.
+*/
 static void
 dumpFilter(char *pathname, struct sock_filter *filterProg, int instrCnt)
 {
     int fd;
 
+    /* Open the output file, truncating it if it exists. 
+       Permissions: Read/Write for user (0600). */
     fd = open(pathname, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
     if (fd == -1)
         errExit("open");
 
+    /* Write the array of struct sock_filter to the file */
     if (write(fd, filterProg, instrCnt * sizeof(struct sock_filter)) == -1)
         errExit("write");
 
@@ -122,19 +159,27 @@ main(int argc, char *argv[])
     int instrCnt;       /* Number of instructions in BPF filter */
     pid_t pid;
 
+    /* Validate command line arguments */
     if (argc < 2 || strcmp(argv[1], "--help") == 0) {
         fprintf(stderr, "%s PID dump-file [filter-index]\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
     pid = atoi(argv[1]);
+    
+    /* If a 3rd argument is provided, use it as the index. Default to 0. */
     filterIndex = (argc > 3) ? atoi(argv[3]) : 0;
 
+    /* Perform the fetch logic (ptrace attach, query, read) */
     filterProg = fetchFilter(pid, filterIndex, &instrCnt);
 
+    /* Write result to disk */
     dumpFilter(argv[2], filterProg, instrCnt);
 
+    /* Free the buffer (good practice, though we exit immediately) */
     free(filterProg);
 
     exit(EXIT_SUCCESS);
 }
+
+

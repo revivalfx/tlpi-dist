@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -17,13 +17,26 @@
 
    See also prod_condvar.c.
 */
+
+/*
+ * VERBOSE COMMENTARY:
+ * This program has producer threads (creating units) and a main consumer thread.
+ * * THE PROBLEM:
+ * The consumer needs to wait for data. Without a condition variable, 
+ * the consumer must continuously loop, locking the mutex, checking if 
+ * 'avail > 0', and unlocking. 
+ * * This is called "Polling" or "Busy Waiting". It burns CPU cycles unnecessarily 
+ * checking a value that hasn't changed.
+ */
+
 #include <time.h>
 #include <pthread.h>
 #include "tlpi_hdr.h"
 
+/* Mutex protects the shared variable 'avail' */
 static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 
-static int avail = 0;
+static int avail = 0; /* Number of units produced and ready for consumption */
 
 static void *
 threadFunc(void *arg)
@@ -32,10 +45,11 @@ threadFunc(void *arg)
     int s, j;
 
     for (j = 0; j < cnt; j++) {
-        sleep(1);
+        sleep(1); /* Simulate time taken to produce an item */
 
         /* Code to produce a unit omitted */
 
+        /* Acquire lock to update shared state */
         s = pthread_mutex_lock(&mtx);
         if (s != 0)
             errExitEN(s, "pthread_mutex_lock");
@@ -79,11 +93,17 @@ main(int argc, char *argv[])
     numConsumed = 0;
     done = FALSE;
 
+    /*
+     * POLLING LOOP
+     * The consumer runs this loop forever until done.
+     */
     for (;;) {
+        /* Lock mutex to safely check 'avail' */
         s = pthread_mutex_lock(&mtx);
         if (s != 0)
             errExitEN(s, "pthread_mutex_lock");
 
+        /* If there is data, consume it */
         while (avail > 0) {             /* Consume all available units */
 
             /* Do something with produced unit */
@@ -96,6 +116,7 @@ main(int argc, char *argv[])
             done = numConsumed >= totRequired;
         }
 
+        /* Unlock mutex */
         s = pthread_mutex_unlock(&mtx);
         if (s != 0)
             errExitEN(s, "pthread_mutex_unlock");
@@ -104,8 +125,15 @@ main(int argc, char *argv[])
             break;
 
         /* Perhaps do other work here that does not require mutex lock */
+        
+        /* * CRITICAL NOTE:
+         * If 'avail' was 0, we immediately loop back up and lock the mutex again.
+         * This hammers the mutex and the CPU.
+         */
 
     }
 
     exit(EXIT_SUCCESS);
 }
+
+

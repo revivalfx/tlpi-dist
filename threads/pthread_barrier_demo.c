@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -19,6 +19,15 @@
    The program creates 'num-threads' threads, each of which loop
    'num-threads' times, waiting on the same barrier.
 */
+
+/*
+ * VERBOSE COMMENTARY:
+ * Barriers are useful for "phased" algorithms (like parallel matrix math).
+ * Phase 1: All threads compute part of the data.
+ * Barrier: Wait for everyone to finish Phase 1.
+ * Phase 2: All threads use the results from Phase 1.
+ */
+
 #include <pthread.h>
 #include "tlpi_hdr.h"
 
@@ -57,6 +66,11 @@ threadFunc(void *arg)
 
         printf("Thread %ld about to wait on barrier %d "
                 "after sleeping %d seconds\n", threadNum, j, nsecs);
+        
+        /* * BARRIER WAIT
+         * If I am not the last thread to arrive, I sleep here.
+         * If I AM the last thread to arrive, everyone wakes up.
+         */
         s = pthread_barrier_wait(&barrier);
 
         /* After the required number of threads have called
@@ -71,6 +85,11 @@ threadFunc(void *arg)
            the program to ensure that some action is performed exactly
            once each time a barrier is passed. */
 
+        /* * CHECK RETURN VALUE
+         * 0 = Standard return (I was just one of the threads).
+         * PTHREAD_BARRIER_SERIAL_THREAD = Special return (I was the chosen one).
+         * This allows one thread to do setup work for the next phase.
+         */
         if (s == 0) {
             printf("Thread %ld passed barrier %d: return value was 0\n",
                     threadNum, j);
@@ -127,7 +146,11 @@ main(int argc, char *argv[])
     /* Initialize the barrier. The final argument specifies the
        number of threads that must call pthread_barrier_wait()
        before any thread will unblock from that call. */
-
+    
+    /* * BARRIER INITIALIZATION
+     * 'numThreads' is the "count". The barrier will block threads 
+     * until 'numThreads' of them have called wait().
+     */
     s = pthread_barrier_init(&barrier, NULL, numThreads);
     if (s != 0)
         errExitEN(s, "pthread_barrier_init");
@@ -158,3 +181,5 @@ main(int argc, char *argv[])
 
     exit(EXIT_SUCCESS);
 }
+
+

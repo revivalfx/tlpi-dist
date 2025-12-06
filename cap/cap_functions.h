@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU Lesser General Public License as published   *
 * by the Free Software Foundation, either version 3 or (at your option)   *
@@ -26,8 +26,9 @@
 
    Returns: 0 on success or -1 on error. */
 
-#include <sys/capability.h>
+#include <sys/capability.h> /* Required for cap_flag_t and libcap definitions */
 
+/* Prototype for function defined in cap_functions.c */
 int modifyCapSetting(cap_flag_t flag, int capability, int setting);
 
 #endif

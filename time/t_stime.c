@@ -38,7 +38,7 @@ main(int argc, char *argv[])
         fatal("strptime failed");
 
     t = mktime(&tm);
-    if (stime(&t) == -1)
+    if (clock_settime(CLOCK_REALTIME, &t) == -1)
         errExit("stime");
 
     exit(EXIT_SUCCESS);

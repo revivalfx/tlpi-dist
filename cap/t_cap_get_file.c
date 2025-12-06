@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -36,24 +36,35 @@ main(int argc, char *argv[])
 
     /* Fetch and display file capabilities */
 
+    /* * cap_get_file(path) retrieves the capabilities associated with the file 
+     * at 'path'. These are stored in the 'security.capability' extended attribute.
+     */
     caps = cap_get_file(argv[1]);
 
     if (caps == NULL) {
+        /* * ENODATA indicates that the extended attribute "security.capability"
+         * is not present on the file. This is the normal state for most files.
+         */
         if (errno == ENODATA)
             printf("No capabilities are attached to this file\n");
         else
             errExit("cap_get_file");
     } else {
+        /* Convert the internal capability structure to a human-readable string */
         str = cap_to_text(caps, NULL);
         if (str == NULL)
             errExit("cap_to_text");
 
         printf("Capabilities: %s\n", str);
 
+        /* Free the text string memory */
         cap_free(str);
     }
 
+    /* Free the capability structure memory */
     cap_free(caps);
 
     exit(EXIT_SUCCESS);
 }
+
+

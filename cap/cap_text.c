@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -38,17 +38,23 @@
 #define PRCAP_SHOW_UNRECOGNIZED 0x02    /* Display capabilities that are
                                            unrecognized by libcap */
 
+/* Helper function: checks if a specific capability bit is set in a specific set (P/E/I) */
 static int
 capIsSet(cap_t capSets, cap_value_t cap, cap_flag_t set)
 {
     cap_flag_value_t value;
 
+    /* * cap_get_flag checks the state of a single capability 'cap' 
+     * within the set 'set' (e.g., CAP_PERMITTED) inside 'capSets'.
+     * The result (CAP_SET or CAP_CLEAR) is stored in 'value'.
+     */
     if (cap_get_flag(capSets, cap, set, &value) == -1)
         errExit("cap_get_flag");
 
     return value == CAP_SET;
 }
 
+/* Wrappers for checking specific sets */
 static int
 capIsPermitted(cap_t capSets, cap_value_t cap)
 {
@@ -76,11 +82,14 @@ printCap(cap_t capSets, cap_value_t cap, char *capStrName, int flags)
 {
     cap_flag_value_t dummy;
 
+    /* Check if the capability is valid/recognized by libcap */
     if (cap_get_flag(capSets, cap, CAP_PERMITTED, &dummy) != -1) {
+        /* Print if SHOW_ALL is set, OR if the capability is actually active in any set */
         if ((flags & PRCAP_SHOW_ALL) ||
                 capIsPermitted(capSets, cap) ||
                 capIsEffective(capSets, cap) ||
                 capIsInheritable(capSets, cap))
+            /* Print columns: Name, Permitted(p), Effective(e), Inheritable(i) */
             printf("%-22s %s%s%s\n", capStrName,
                    capIsPermitted(capSets, cap) ? "p" : " ",
                    capIsEffective(capSets, cap) ? "e" : " ",
@@ -91,17 +100,19 @@ printCap(cap_t capSets, cap_value_t cap, char *capStrName, int flags)
     }
 }
 
+/* Iterates through all known capabilities and prints their status */
 static void
 printAllCaps(cap_t capSets, int flags)
 {
     printCap(capSets, CAP_AUDIT_CONTROL, "CAP_AUDIT_CONTROL", flags);
-#ifdef CAP_AUDIT_READ           /* Since Linux 3.16 */
+#ifdef CAP_AUDIT_READ           /* Since Linux 3.16 - check feature macros */
     printCap(capSets, CAP_AUDIT_READ, "CAP_AUDIT_READ", flags);
 #endif
     printCap(capSets, CAP_AUDIT_WRITE, "CAP_AUDIT_WRITE", flags);
 #ifdef CAP_BLOCK_SUSPEND        /* Since Linux 3.5 */
     printCap(capSets, CAP_BLOCK_SUSPEND, "CAP_BLOCK_SUSPEND", flags);
 #endif
+    /* ... (Listing all standard Linux capabilities) ... */
     printCap(capSets, CAP_CHOWN, "CAP_CHOWN", flags);
     printCap(capSets, CAP_DAC_OVERRIDE, "CAP_DAC_OVERRIDE", flags);
     printCap(capSets, CAP_DAC_READ_SEARCH, "CAP_DAC_READ_SEARCH", flags);
@@ -157,20 +168,26 @@ main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    /* Convert input text argument to internal structure */
     capSets = cap_from_text(argv[1]);
     if (capSets == NULL)
         errExit("cap_from_text");
 
+    /* Convert back to text to see the canonical form */
     textCaps = cap_to_text(capSets, NULL);
     if (textCaps == NULL)
         errExit("cap_to_text");
 
     printf("caps_to_text() returned \"%s\"\n\n", textCaps);
 
+    /* Display the grid of capabilities */
     printAllCaps(capSets, PRCAP_SHOW_ALL);
 
+    /* Free memory */
     if (cap_free(textCaps) != 0 || cap_free(capSets) != 0)
         errExit("cap_free");
 
     exit(EXIT_SUCCESS);
 }
+
+

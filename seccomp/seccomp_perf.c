@@ -19,6 +19,20 @@
 
         $ sudo sh -c "echo 1 > /proc/sys/net/core/bpf_jit_enable"
 */
+
+/* seccomp_perf.c
+
+   Detailed Explanation:
+   Measures the performance impact of seccomp filters.
+   It runs a tight loop calling getppid() (a very fast/cheap syscall).
+   
+   Usage:
+   1. Run without 'x': Measures baseline cost of getppid().
+   2. Run with 'x': Installs a filter (which allows getppid implicitly via a 
+      fail-on-open rule) and measures the cost with the BPF engine running.
+*/
+
+
 #define _GNU_SOURCE
 #include <stddef.h>
 #include <fcntl.h>

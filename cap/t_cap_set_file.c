@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -28,21 +28,33 @@ main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    /* * Convert the user-supplied string (e.g., "cap_net_admin=ep") into the 
+     * internal libcap representation (cap_t).
+     */
     capSets = cap_from_text(argv[1]);
     if (capSets == NULL)
         errExit("cap_from_text");
 
+    /* * Convert back to text to verify what libcap understood and normalize the format.
+     */
     textCaps = cap_to_text(capSets, NULL);
     if (textCaps == NULL)
         errExit("cap_to_text");
 
     printf("caps_to_text() returned \"%s\"\n\n", textCaps);
 
+    /* * Write the capability set to the file specified in argv[2].
+     * This updates the "security.capability" extended attribute of the file.
+     * Note: This usually requires root privileges.
+     */
     if (cap_set_file(argv[2], capSets) == -1)
         errExit("cap_set_file");
 
+    /* Free allocated memory */
     if (cap_free(textCaps) != 0 || cap_free(capSets) != 0)
         errExit("cap_free");
 
     exit(EXIT_SUCCESS);
 }
+
+

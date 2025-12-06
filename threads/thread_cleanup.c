@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -15,6 +15,17 @@
    An example of thread cancellation using the POSIX threads API:
    demonstrate the use of pthread_cancel() and cleanup handlers.
 */
+
+/*
+ * VERBOSE COMMENTARY:
+ * If a thread is canceled while it holds a mutex or has allocated memory,
+ * that mutex might stay locked forever or the memory might leak.
+ * * Cleanup Handlers act like a "stack" of functions to run upon cancellation.
+ * You PUSH a handler when you allocate a resource.
+ * You POP the handler when you release the resource naturally.
+ * If canceled in between, the system pops and runs the handler for you.
+ */
+
 #include <pthread.h>
 #include "tlpi_hdr.h"
 
@@ -27,6 +38,7 @@ cleanupHandler(void *arg)
 {
     int s;
 
+    /* The handler logic: Free the buffer and unlock the mutex */
     printf("cleanup: freeing block at %p\n", arg);
     free(arg);
 
@@ -49,15 +61,34 @@ threadFunc(void *arg)
     if (s != 0)
         errExitEN(s, "pthread_mutex_lock");
 
+    /*
+     * PUSH CLEANUP HANDLER
+     * We have acquired resources (malloc + mutex lock).
+     * If we get canceled now, we need 'cleanupHandler' to run.
+     * We pass 'buf' as the argument to the handler.
+     */
     pthread_cleanup_push(cleanupHandler, buf);
 
     while (glob == 0) {
+        /*
+         * A CANCELLATION POINT
+         * pthread_cond_wait is a cancellation point. 
+         * If main cancels us while we wait here, the thread stops waiting,
+         * and the cleanup handler stack is unwound (executing cleanupHandler).
+         */
         s = pthread_cond_wait(&cond, &mtx);     /* A cancellation point */
         if (s != 0)
             errExitEN(s, "pthread_cond_wait");
     }
 
     printf("thread:  condition wait loop completed\n");
+    
+    /*
+     * POP CLEANUP HANDLER
+     * If we reach here naturally (no cancellation), we remove the handler.
+     * The argument '1' means "Execute the handler now". 
+     * This effectively does the cleanup (free + unlock) as part of normal execution.
+     */
     pthread_cleanup_pop(1);             /* Executes cleanup handler */
     return NULL;
 }
@@ -77,6 +108,7 @@ main(int argc, char *argv[])
 
     if (argc == 1) {            /* Cancel thread */
         printf("main:    about to cancel thread\n");
+        /* Triggers the cleanup stack in the target thread */
         s = pthread_cancel(thr);
         if (s != 0)
             errExitEN(s, "pthread_cancel");
@@ -84,6 +116,7 @@ main(int argc, char *argv[])
     } else {                    /* Signal condition variable */
         printf("main:    about to signal condition variable\n");
 
+        /* Code to signal the thread naturally (normal termination path) */
         s = pthread_mutex_lock(&mtx);   /* See the TLPI page 679 erratum */
         if (s != 0)
             errExitEN(s, "pthread_mutex_lock");
@@ -109,3 +142,4 @@ main(int argc, char *argv[])
 
     exit(EXIT_SUCCESS);
 }
+

@@ -64,6 +64,25 @@
    such filters will be larger (and one may easily hit the 4096-instruction
    limit) and slower (because of the added architecture checks).
 */
+
+/* seccomp_multiarch.c
+
+   Detailed Explanation:
+   This program serves as a proof-of-concept for why seccomp filters must
+   explicitly check the system architecture (AUDIT_ARCH_*) on every system call.
+   
+   Scenario:
+   1. A process starts as an x86-64 binary.
+   2. It installs a persistent seccomp filter.
+   3. It execve()s a 32-bit (i386) binary.
+   
+   If the filter only checks syscall numbers (e.g., syscall #10) without checking
+   the architecture, syscall #10 might mean "unlink" on x86-64 but "mount" on i386.
+   
+   This code builds three versions of itself (x86-64, i386, x32) and chains them
+   together via execve() to demonstrate how the filter handles (or must handle)
+   the changing architecture.
+*/
 #define _GNU_SOURCE
 #include <mqueue.h>
 #include <stddef.h>
@@ -162,79 +181,88 @@ install_filter(void)
        seccomp failure, return the system call number as the error number
        that will appear in 'errno'. */
 
+/* This function constructs and loads the BPF (Berkeley Packet Filter) program.
+       The logic is:
+       1. Check Architecture.
+       2. If Arch A, Check Syscall A_ID.
+       3. If Arch B, Check Syscall B_ID.
+       
+       It is designed to fail mq_notify() with a specific errno value equal
+       to the syscall number, allowing us to verify which rule triggered.
+    */
+
     struct sock_filter filter[] = {
 
-        /* [0] Load the architecture value. */
-
+        /* [0] Load the architecture value. 
+           BPF_LD = Load, BPF_W = Word (32-bit), BPF_ABS = Absolute offset.
+           We are reading from the 'struct seccomp_data' provided by the kernel. */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                 (offsetof(struct seccomp_data, arch))),
 
-        /* [1] Are we on x86-64 architecture? If it is not, jump forward
-               to test whether this is the i386 architecture. */
-
+        /* [1] Check: Are we running on x86-64? 
+           BPF_JEQ = Jump if Equal. 
+           If TRUE (it is x86-64): Jump 0 instructions (continue to next line).
+           If FALSE: Jump 5 instructions forward (to index [7]). */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 0, 5),
 
-        /* [2] Load the system call number. */
+        /* --- x86-64 Block --- */
 
+        /* [2] Load the system call number into the accumulator. */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  (offsetof(struct seccomp_data, nr))),
 
-        /* [3] Is this the x86-64 mq_notify() syscall? */
-
+        /* [3] Check: Is this the x86-64 mq_notify syscall (244)?
+           If TRUE: Jump 0 (continue to [4]).
+           If FALSE: Jump 1 (skip to [5]). */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NR_mq_notify_x86_64, 0, 1),
 
-        /* [4] It is; make the call fail with an error equal to the
-               syscall number. */
-
+        /* [4] Action: Fail the call with errno = 244. 
+           This confirms we caught an x86-64 call. */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | NR_mq_notify_x86_64),
 
-        /* [5] Is this the x32 mq_notify() syscall? If it is not, jump
-               forward to allow the syscall. */
-
+        /* [5] Check: Is this the x32 mq_notify syscall?
+           Note: x32 runs under the x86_64 audit architecture, but syscalls 
+           have the X32 bit set.
+           If TRUE: Jump 0 (continue to [6]).
+           If FALSE: Jump 5 (skip out of x86 block to [11] - allow). */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
                  (NR_mq_notify_x32 + X32_SYSCALL_BIT), 0, 5),
 
-        /* [6] It is; make the call fail with an error equal to the
-               syscall number. */
-
+        /* [6] Action: Fail the call with errno = 527.
+           We strip the high bit for the errno return so it fits standard integer ranges. */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | NR_mq_notify_x32),
-                /* Return NR_mq_notify_x32 as the error number, rather than
-                   (NR_mq_notify_x32 + X32_SYSCALL_BIT), because glibc only
-                   considers negative syscall return values in the range
-                   [-4096 < retval < 0] to be error values that should be
-                   (negated and) copied to 'errno'.  Note also that even
-                   allowing for the masking of the X32_SYSCALL_BIT,
-                   mq_notify() is an example of a system call that has a
-                   different number on x86-64 and x32 (this is *not* the
-                   case for all syscalls under these two ABIs). */
 
-        /* [7] Is this the i386 architecture? If it is not, jump forward
-               to kill the process. */
+        /* --- i386 Block --- */
 
+        /* [7] Check: Is this the i386 architecture?
+           Reached via the jump from [1].
+           If TRUE: Jump 0 (continue to [8]).
+           If FALSE: Jump 4 (skip to [12] - Kill process). 
+           (This catches architectures we don't know about). */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_I386, 0, 4),
 
-        /* [8] Load the system call number. */
-
+        /* [8] Load the system call number (re-load needed because we might have skipped here). */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  (offsetof(struct seccomp_data, nr))),
 
-        /* [9] Is this the i386 mq_notify() syscall? If it is not, jump
-               forward to allow the syscall. */
-
+        /* [9] Check: Is this the i386 mq_notify syscall (281)?
+           If TRUE: Jump 0 (continue to [10]).
+           If FALSE: Jump 1 (skip to [11] - allow). */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NR_mq_notify_i386, 0, 1),
 
-        /* [10] It is; make the call fail with an error equal to the
-                syscall number. */
-
+        /* [10] Action: Fail the call with errno = 281. */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | NR_mq_notify_i386),
 
-        /* [11] Allow the system call. */
+        /* --- Default Allow --- */
 
+        /* [11] Action: Allow the system call.
+           Reached if the syscall didn't match mq_notify in the relevant arch block. */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
 
-        /* [12] Kill the process if the architecture is not one of those
-                that we expect. */
+        /* --- Safety Net --- */
 
+        /* [12] Action: Kill the process immediately.
+           Reached if the architecture was neither x86-64 nor i386. */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
     };
 
@@ -243,6 +271,7 @@ install_filter(void)
         .filter = filter,
     };
 
+    /* Install the filter. */
     if (seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog) == -1)
         errExit("seccomp");
 }

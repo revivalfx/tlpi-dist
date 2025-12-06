@@ -69,10 +69,22 @@ install_filter(void)
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
 
         /* Allow system calls other than open() and openat() */
+	/* Logic:
+           If (syscall == open)  GOTO Kill
+           If (syscall == openat) GOTO Kill
+           Else Allow
+        */
 
+        /* Check open. If Match, Jump 2 (to Kill). Else continue. */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_open, 2, 0),
+        
+        /* Check openat. If Match, Jump 1 (to Kill). Else continue. */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_openat, 1, 0),
+        
+        /* Allow everything else */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        
+        /* Kill Process (Target of the Jumps above) */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS)
 
     };
@@ -98,10 +110,10 @@ main(int argc, char **argv)
 
     install_filter();
 
+    /* Attempt to open a file - this should cause immediate process death */
     if (open("/tmp/a", O_RDONLY) == -1)
         errExit("open");
 
     printf("We shouldn't see this message\n");
-
     exit(EXIT_SUCCESS);
 }

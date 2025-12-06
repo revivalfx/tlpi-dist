@@ -1,6 +1,6 @@
 /*************************************************************************\
-*                  Copyright (C) Michael Kerrisk, 2019.                   *
-*                                                                         *
+* Copyright (C) Michael Kerrisk, 2019.                   *
+* *
 * This program is free software. You may use, modify, and redistribute it *
 * under the terms of the GNU General Public License as published by the   *
 * Free Software Foundation, either version 3 or (at your option) any      *
@@ -17,21 +17,24 @@
    command line.  The program relies on the use of ambient capabilities,
    a feature that first appeared in Linux 4.3.
 */
+
+/* _GNU_SOURCE is defined to access Linux-specific extensions (like prctl) */
 #define _GNU_SOURCE         /* See feature_test_macros(7) */
 #include <string.h>
 #include <unistd.h>
-#include <sys/prctl.h>
+#include <sys/prctl.h>      /* Required for prctl() system call */
 #include <sys/capability.h>
-#include <linux/securebits.h>
+#include <linux/securebits.h> /* For SECBIT_* constants */
 #include <sys/types.h>
-#include <pwd.h>
-#include <grp.h>
+#include <pwd.h>            /* For getpwnam (user db lookup) */
+#include <grp.h>            /* For getgrouplist (group db lookup) */
 #include <stdio.h>
 #include <errno.h>
 #include <stdlib.h>
-#include "cap_functions.h"
-#include "tlpi_hdr.h"
+#include "cap_functions.h"  /* Helper function defined in previous file */
+#include "tlpi_hdr.h"       /* Standard TLPI book header */
 
+/* Helper function to display usage instructions */
 static void
 usage(char *pname)
 {
@@ -47,7 +50,6 @@ usage(char *pname)
 
 /* Switch credentials (user ID, group ID, supplementary groups) to
    those for the user named in 'user' */
-
 static void
 setCredentials(char *user)
 {
@@ -55,48 +57,47 @@ setCredentials(char *user)
     int ngroups;
     gid_t *groups;
 
-    /* Look up user in user database */
-
+    /* Look up user in user database (usually /etc/passwd) to get UID/GID */
     pwd = getpwnam(user);
     if (pwd == NULL) {
         fprintf(stderr, "Unknown user: %s\n", user);
         exit(EXIT_FAILURE);
     }
 
-    /* Find out how many supplementary groups the user is a member of */
-
+    /* * Find out how many supplementary groups the user is a member of.
+     * By passing NULL for the list and pointer to 0 for ngroups, 
+     * getgrouplist fills ngroups with the required size.
+     */
     ngroups = 0;
     getgrouplist(user, pwd->pw_gid, NULL, &ngroups);
 
-    /* Allocate an array for supplementary group IDs */
-
+    /* Allocate an array for supplementary group IDs based on the count found */
     groups = calloc(ngroups, sizeof(gid_t));
     if (groups == NULL)
         errExit("calloc");
 
-    /* Get supplementary group list of 'user' from group database */
-
+    /* Get the actual supplementary group list of 'user' from group database */
     if (getgrouplist(user, pwd->pw_gid, groups, &ngroups) == -1)
         errExit("getgrouplist");
 
-    /* Set the supplementary group list */
-
+    /* Set the supplementary group list for the current process */
     if (setgroups(ngroups, groups) == -1)
         errExit("setgroups");
 
-    /* Set all group IDs to GID of this user */
-
+    /* * Set Real, Effective, and Saved Group IDs to the GID of the target user.
+     * This fully drops root group privileges.
+     */
     if (setresgid(pwd->pw_gid, pwd->pw_gid, pwd->pw_gid) == -1)
         errExit("setresgid");
 
-    /* Set all user IDs to UID of this user */
-
+    /* * Set Real, Effective, and Saved User IDs to the UID of the target user.
+     * This fully drops root user privileges.
+     */
     if (setresuid(pwd->pw_uid, pwd->pw_uid, pwd->pw_uid) == -1)
         errExit("setresuid");
 }
 
 /* Add a set of capabilities to the process's ambient list */
-
 static void
 setAmbientCapabilities(char *capList)
 {
@@ -109,24 +110,28 @@ setAmbientCapabilities(char *capList)
 
     for (char *p = capList; (p = strtok(p, ",")); p = NULL) {
 
-        /* Convert the capability name to a capability number */
-
+        /* Convert the capability name (e.g., "cap_net_bind_service") to a 
+           capability number (integer ID used by kernel) */
         if (cap_from_name(p, &cap) == -1) {
             fprintf(stderr, "Unrecognized capability name: %s\n", p);
             exit(EXIT_FAILURE);
         }
 
-        /* In order to place a capability into the ambient set,
-           that capability must also be in the inheritable set */
-
+        /* * Rule of Ambient Caps: A capability cannot be raised in the Ambient set
+         * unless it is ALREADY present in the Inheritable set.
+         * * modifyCapSetting is the helper function from cap_functions.c.
+         * It sets the bit in the Inheritable set.
+         */
         if (modifyCapSetting(CAP_INHERITABLE, cap, CAP_SET) == -1) {
             fprintf(stderr, "Could not raise '%s' inheritable "
                     "capability (%s)\n", p, strerror(errno));
             exit(EXIT_FAILURE);
         }
 
-        /* Raise the capability in the ambient set */
-
+        /* * Raise the capability in the ambient set using prctl().
+         * PR_CAP_AMBIENT_RAISE ensures the capability survives the execve() 
+         * call that follows later, allowing the non-root child process to have it.
+         */
         if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, cap, 0, 0) == -1) {
             fprintf(stderr, "Could not raise '%s' ambient "
                     "capability (%s)\n", p, strerror(errno));
@@ -138,24 +143,35 @@ setAmbientCapabilities(char *capList)
 int
 main(int argc, char *argv[])
 {
+    /* Validate command line arguments */
     if (argc < 4 || strcmp(argv[1], "--help") == 0)
         usage(argv[0]);
 
+    /* This program must start as root to switch UIDs and manipulate capability sets */
     if (geteuid() != 0)
         fatal("Must be run as root");
 
-    /* Set "no setuid fixup" securebit so that when we switch to
-       a nonzero UID, we don't lose capabilities */
-
+    /* * Set "no setuid fixup" securebit.
+     * Normally, when a process switches UID from 0 to non-zero, the kernel clears 
+     * the capability sets. Setting this bit prevents that clearing, allowing us 
+     * to retain the capabilities we want to pass to the user.
+     */
     if (prctl(PR_SET_SECUREBITS, SECBIT_NO_SETUID_FIXUP, 0, 0, 0) == -1)
         errExit("prctl");
 
+    /* Drop privileges to the specified user */
     setCredentials(argv[1]);
 
+    /* Configure the ambient capabilities requested */
     setAmbientCapabilities(argv[2]);
 
-    /* Execute the program (with arguments) named in argv[3]... */
-
+    /* * Execute the program (with arguments) named in argv[3]... 
+     * Because of the ambient capabilities set above, the new program 
+     * will start with those capabilities active, even though it is running 
+     * as a non-root user.
+     */
     execvp(argv[3], &argv[3]);
     errExit("execvp");
 }
+
+
